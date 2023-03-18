@@ -14,15 +14,33 @@ using UnityEngine.Serialization;
 public class EntitiesController : MonoBehaviour
 {
     public GameObject EntityPrefab;
-    
+
     public float3 SphereCenter;
     [Range(10.0f, 100.0f)] public float SphereRadius;
 
     [Range(1, 100000)] public int EntitiesCount;
 
+    public NativeArray<float3> Axises;
+    
+    private CancellationTokenSource MovementCancellationTokenSource;
+
+    private void Awake()
+    {
+        MovementCancellationTokenSource = new CancellationTokenSource();
+    }
+
     private async UniTaskVoid Start()
     {
-        await MoveEntitiesAroundTheSphereAsync(await SpawnAtInitialPositionsAsync(await SpawnEntitiesAsync())) ;
+        Axises = await GenerateMovementAxisesAsync();
+        List<GameObject> entities = await SpawnEntitiesAsync();
+        await SpawnAtInitialPositionsAsync(entities);
+        MoveEntitiesAroundTheSphereAsync(entities, MovementCancellationTokenSource.Token).Forget();
+    }
+
+    private void OnDestroy()
+    {
+        MovementCancellationTokenSource.Cancel();
+        Axises.Dispose();
     }
 
     private async UniTask<List<GameObject>> SpawnAtInitialPositionsAsync(List<GameObject> entities)
@@ -52,22 +70,35 @@ public class EntitiesController : MonoBehaviour
         return await UniTask.FromResult(entities);
     }
 
-    private async UniTask MoveEntitiesAroundTheSphereAsync(List<GameObject> entities)
+    private async UniTask<NativeArray<float3>> GenerateMovementAxisesAsync()
+    {
+        NativeArray<float3> axises = new NativeArray<float3>(EntitiesCount, Allocator.Persistent);
+        GenerateMovementAxisJob job = new GenerateMovementAxisJob
+        {
+            Axises = axises
+        };
+        JobHandle jobHandle = job.Schedule(EntitiesCount, 0);
+        await UniTask.WaitUntil(() => jobHandle.IsCompleted);
+        jobHandle.Complete();
+
+        return await UniTask.FromResult(axises);
+    }
+
+    private async UniTask MoveEntitiesAroundTheSphereAsync(List<GameObject> entities, CancellationToken cancellationToken)
     {
         TransformAccessArray transformAccessArray = new TransformAccessArray(entities.Count);
         transformAccessArray.SetTransforms(entities.Select((entity) => entity.transform).ToArray());
-        
-        while (true)
+
+        while (cancellationToken.IsCancellationRequested == false)
         {
             MoveEntitiesAroundTheSphereParallelJob job = new MoveEntitiesAroundTheSphereParallelJob
             {
                 Data = new MoveEntitiesAroundTheSphereData
                 {
+                    Axises = Axises,
                     DeltaTime = Time.deltaTime,
-                    RotationAxis = new float3(1, 1, 0),
                     RotationSpeed = 1.0f,
-                    SphereCenter = SphereCenter,
-                    SphereRadius = SphereRadius
+                    SphereCenter = SphereCenter
                 }
             };
 

@@ -16,7 +16,7 @@ public struct MoveEntitiesAroundTheSphereParallelJob : IJobParallelForTransform
         float3 toPivot = position - Data.SphereCenter;
 
         // Apply rotation around the pivot point
-        quaternion rot = quaternion.AxisAngle(math.normalize(Data.RotationAxis), Data.RotationSpeed * Data.DeltaTime);
+        quaternion rot = quaternion.AxisAngle(math.normalize(Data.Axises[index]), Data.RotationSpeed * Data.DeltaTime);
         toPivot = math.mul(rot, toPivot);
 
         // Move back from pivot point
