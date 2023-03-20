@@ -21,30 +21,25 @@ public class EntitiesController : MonoBehaviour
     [Range(1, 100000)] public int EntitiesCount;
 
     public NativeArray<float3> Axises;
-    
-    private CancellationTokenSource MovementCancellationTokenSource;
 
+    private Transform[] entities;
+    private JobHandle jobHandle;
+    
     private void Awake()
     {
-        MovementCancellationTokenSource = new CancellationTokenSource();
+        entities = SpawnEntities();
     }
 
-    private async UniTaskVoid Start()
+    private void Start()
     {
-        Axises = await GenerateMovementAxisesAsync();
-        List<GameObject> entities = await SpawnEntitiesAsync();
-        await SpawnAtInitialPositionsAsync(entities);
-        MoveEntitiesAroundTheSphereAsync(entities, MovementCancellationTokenSource.Token).Forget();
-    }
-
-    private void OnDestroy()
-    {
-        MovementCancellationTokenSource.Cancel();
-        Axises.Dispose();
-    }
-
-    private async UniTask<List<GameObject>> SpawnAtInitialPositionsAsync(List<GameObject> entities)
-    {
+        Axises = new NativeArray<float3>(EntitiesCount, Allocator.Persistent);
+        GenerateMovementAxisJob generateMovementAxis = new GenerateMovementAxisJob
+        {
+            Axises = Axises
+        };
+        JobHandle generateMovementAxisHandle = generateMovementAxis.Schedule(EntitiesCount, 0);
+        generateMovementAxisHandle.Complete();
+        
         NativeArray<float3> positions = new NativeArray<float3>(EntitiesCount, Allocator.TempJob);
         GenerateInitialPositionsJobParallel job = new GenerateInitialPositionsJobParallel
         {
@@ -56,8 +51,8 @@ public class EntitiesController : MonoBehaviour
                 Positions = positions
             }
         };
-        JobHandle jobHandle = job.Schedule(EntitiesCount, 0);
-        await UniTask.WaitUntil(() => jobHandle.IsCompleted);
+        
+        jobHandle = job.Schedule(EntitiesCount, 0, generateMovementAxisHandle);
         jobHandle.Complete();
 
         for (int i = 0; i < positions.Length; i++)
@@ -66,46 +61,31 @@ public class EntitiesController : MonoBehaviour
         }
 
         positions.Dispose();
-
-        return await UniTask.FromResult(entities);
     }
 
-    private async UniTask<NativeArray<float3>> GenerateMovementAxisesAsync()
+    private void OnDestroy()
     {
-        NativeArray<float3> axises = new NativeArray<float3>(EntitiesCount, Allocator.Persistent);
-        GenerateMovementAxisJob job = new GenerateMovementAxisJob
-        {
-            Axises = axises
-        };
-        JobHandle jobHandle = job.Schedule(EntitiesCount, 0);
-        await UniTask.WaitUntil(() => jobHandle.IsCompleted);
-        jobHandle.Complete();
-
-        return await UniTask.FromResult(axises);
+        Axises.Dispose();
     }
-
-    private async UniTask MoveEntitiesAroundTheSphereAsync(List<GameObject> entities, CancellationToken cancellationToken)
+    
+    private void Update()
     {
-        TransformAccessArray transformAccessArray = new TransformAccessArray(entities.Count);
-        transformAccessArray.SetTransforms(entities.Select((entity) => entity.transform).ToArray());
+        TransformAccessArray transformAccessArray = new TransformAccessArray(EntitiesCount);
+        transformAccessArray.SetTransforms(entities);
 
-        while (cancellationToken.IsCancellationRequested == false)
+        MoveEntitiesAroundTheSphereParallelJob job = new MoveEntitiesAroundTheSphereParallelJob
         {
-            MoveEntitiesAroundTheSphereParallelJob job = new MoveEntitiesAroundTheSphereParallelJob
+            Data = new MoveEntitiesAroundTheSphereData
             {
-                Data = new MoveEntitiesAroundTheSphereData
-                {
-                    Axises = Axises,
-                    DeltaTime = Time.deltaTime,
-                    RotationSpeed = 1.0f,
-                    SphereCenter = SphereCenter
-                }
-            };
+                Axises = Axises,
+                DeltaTime = Time.deltaTime,
+                RotationSpeed = 1.0f,
+                SphereCenter = SphereCenter
+            }
+        };
 
-            JobHandle jobHandle = job.Schedule(transformAccessArray);
-            jobHandle.Complete();
-            await UniTask.Yield(PlayerLoopTiming.Update);
-        }
+        JobHandle handle = job.Schedule(transformAccessArray, jobHandle);
+        handle.Complete();
     }
 
     private void OnDrawGizmos()
@@ -113,19 +93,14 @@ public class EntitiesController : MonoBehaviour
         Gizmos.DrawWireSphere(SphereCenter, SphereRadius);
     }
 
-    public async UniTask<List<GameObject>> SpawnEntitiesAsync()
+    public Transform[] SpawnEntities()
     {
         List<GameObject> entities = new List<GameObject>();
         for (int i = 0; i < EntitiesCount; i++)
         {
-            entities.Add(SpawnEntity());
+            entities.Add(Instantiate(EntityPrefab, transform));
         }
 
-        return await UniTask.FromResult(entities);
-    }
-
-    public GameObject SpawnEntity()
-    {
-        return Instantiate(EntityPrefab, transform);
+        return entities.Select((entity) => entity.transform).ToArray();
     }
 }
